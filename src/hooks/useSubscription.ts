@@ -9,8 +9,9 @@ interface Subscription {
   user_id: string;
   plan: 'free' | 'basic' | 'premium' | 'enterprise' | 'silver' | 'pro';
   plan_status: 'active' | 'inactive' | 'cancelled';
-  current_period_start: string;
-  current_period_end: string;
+  expires_at: string | null;
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -27,64 +28,67 @@ export const useSubscription = (): UseSubscriptionReturn => {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
 
+  // Função para criar assinatura padrão (free)
+  const createDefaultSubscription = (userId: string): Subscription => ({
+    id: 'free-plan-default',
+    user_id: userId,
+    plan: 'free',
+    plan_status: 'active',
+    expires_at: null,
+    stripe_customer_id: null,
+    stripe_subscription_id: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+
   // Função para buscar assinatura
   const fetchSubscription = async (userId: string) => {
     if (!isConfigured) {
-      // Se Supabase não configurado, simular usuário free
-      setSubscription({
-        id: 'mock-subscription',
-        user_id: userId,
-        plan: 'free',
-        plan_status: 'active',
-        current_period_start: new Date().toISOString(),
-        current_period_end: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
+      console.log('🔧 Supabase não configurado - usando plano gratuito padrão');
+      setSubscription(createDefaultSubscription(userId));
       return;
     }
 
     try {
+      console.log('🔍 Buscando assinatura para usuário:', userId);
+      
       const { data, error } = await supabase
         .from('subscriptions')
-        .select('*')
+        .select('id, user_id, plan_status, expires_at, stripe_customer_id, stripe_subscription_id, created_at, updated_at')
         .eq('user_id', userId)
-        .eq('plan_status', 'active')
-        .single();
+        .maybeSingle(); // Use maybeSingle() em vez de single() para evitar erro quando não encontrar
 
-      if (error && error.code !== 'PGRST116') {
-        console.error('Erro ao buscar assinatura:', error);
+      if (error) {
+        console.warn('⚠️ Erro ao buscar assinatura (tabela pode não existir):', error.message);
+        // Se a tabela não existir ou houver erro de acesso, usar plano gratuito
+        setSubscription(createDefaultSubscription(userId));
         return;
       }
 
       if (data) {
-        setSubscription(data);
-      } else {
-        // Usuário sem assinatura ativa = plano gratuito
+        console.log('✅ Assinatura encontrada:', data);
+        // Mapear plan_status para plan (assumindo que plan_status contém o tipo do plano)
+        const planType = data.plan_status === 'free' ? 'free' : 
+                        data.plan_status === 'basic' ? 'basic' :
+                        data.plan_status === 'premium' ? 'premium' :
+                        data.plan_status === 'enterprise' ? 'enterprise' :
+                        data.plan_status === 'silver' ? 'silver' :
+                        data.plan_status === 'pro' ? 'pro' : 'free';
+
         setSubscription({
-          id: 'free-plan',
-          user_id: userId,
-          plan: 'free',
-          plan_status: 'active',
-          current_period_start: new Date().toISOString(),
-          current_period_end: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
+          ...data,
+          plan: planType,
+          plan_status: data.expires_at && new Date(data.expires_at) > new Date() ? 'active' : 'inactive'
         });
+      } else {
+        console.log('📝 Nenhuma assinatura encontrada - usando plano gratuito');
+        // Usuário sem assinatura = plano gratuito
+        setSubscription(createDefaultSubscription(userId));
       }
     } catch (error) {
-      console.error('Erro inesperado ao buscar assinatura:', error);
-      // Em caso de erro, assumir plano gratuito
-      setSubscription({
-        id: 'free-plan-fallback',
-        user_id: userId,
-        plan: 'free',
-        plan_status: 'active',
-        current_period_start: new Date().toISOString(),
-        current_period_end: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
+      console.error('❌ Erro inesperado ao buscar assinatura:', error);
+      // Em caso de erro de rede ou outro, assumir plano gratuito
+      setSubscription(createDefaultSubscription(userId));
     }
   };
 
@@ -99,6 +103,7 @@ export const useSubscription = (): UseSubscriptionReturn => {
 
   useEffect(() => {
     if (!isConfigured) {
+      console.log('🔧 Supabase não configurado - modo offline');
       setLoading(false);
       return;
     }
@@ -113,7 +118,8 @@ export const useSubscription = (): UseSubscriptionReturn => {
           await fetchSubscription(user.id);
         }
       } catch (error) {
-        console.error('Erro ao obter usuário:', error);
+        console.error('❌ Erro ao obter usuário:', error);
+        // Em caso de erro, não bloquear a aplicação
       } finally {
         setLoading(false);
       }
